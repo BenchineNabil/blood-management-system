@@ -1,41 +1,28 @@
-import { Router } from "express";
 
-import donorsController from "../controllers/donors.controller";
+import { Router } from "express";
+import {
+  getAllDonors,
+  getDonorByNumber,
+  createDonor,
+  updateDonor,
+  getDonorDonations
+} from "../controllers/donors.controller";
 
 import {
-    validateCreateDonor,
-    validateUpdateDonor
+  validateCreateDonor,
+  validateUpdateDonor
 } from "../middlewares/validate";
-
-import { auth } from "../middlewares/auth";
-import { role } from "../middlewares/role";
 
 const router = Router();
 
-router.use(auth);
+router.get("/", getAllDonors);
 
-router.get(
-    "/",
-    donorsController.getAllDonors
-);
+router.get("/:donorNumber/donations", getDonorDonations);
 
-router.get(
-    "/:id",
-    donorsController.getDonorById
-);
+router.get("/:donorNumber", getDonorByNumber);
 
-router.post(
-    "/",
-    role("admin", "nurse"),
-    validateCreateDonor,
-    donorsController.createDonor
-);
+router.post("/", validateCreateDonor, createDonor);
 
-router.patch(
-    "/:id",
-    role("admin", "nurse"),
-    validateUpdateDonor,
-    donorsController.updateDonor
-);
+router.put("/:donorNumber", validateUpdateDonor, updateDonor);
 
 export default router;
