@@ -30,3 +30,4 @@ A web-based application designed to help blood bank staff manage donors, donatio
 ## Status
 
 Project setup and initial preparation.
+.
