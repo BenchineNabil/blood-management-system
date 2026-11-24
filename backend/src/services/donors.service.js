@@ -1,356 +1,223 @@
+
 import db from "../config/db";
-import { ApiError } from "../utils/ApiError";
-import {
-    formatDonorId,
-    formatDonationId
-} from "../utils/ids";
-import {
-    getNextEligibleDate,
-    getDaysSince
-} from "../utils/dates";
+import { formatDonorId, formatDonationId } from "../utils/ids";
 
-type DonorInput = {
-    first_name: string;
-    last_name: string;
-    date_of_birth: string;
-    sex: "M" | "F";
-    address: string;
-    phone: string;
-    wants_reminder?: boolean;
-    blood_type?: string | null;
-};
-
-type DonorQuery = {
-    page?: string;
-    limit?: string;
-    search?: string;
-    bloodType?: string;
-    reminder?: string;
-    from?: string;
-    to?: string;
-};
-
-function getAllDonors(query: DonorQuery) {
-    const page = Math.max(
-        Number(query.page) || 1,
-        1
-    );
-
-    const limit = Math.min(
-        Math.max(Number(query.limit) || 5, 1),
-        100
-    );
-
-    const offset = (page - 1) * limit;
-
-    const conditions: string[] = [];
-    const params: any[] = [];
-
-    if (query.search) {
-        conditions.push(`
-            (
-                CAST(d.donor_id AS TEXT) LIKE ?
-                OR d.first_name LIKE ?
-                OR d.last_name LIKE ?
-                OR (
-                    d.first_name || ' ' || d.last_name
-                ) LIKE ?
-                OR d.phone LIKE ?
-            )
-        `);
-
-        const search = `%${query.search}%`;
-
-        params.push(
-            search,
-            search,
-            search,
-            search,
-            search
-        );
-    }
-
-    if (query.bloodType) {
-        conditions.push("d.blood_type = ?");
-        params.push(query.bloodType);
-    }
-
-    if (query.reminder === "true") {
-        conditions.push("d.wants_reminder = 1");
-    }
-
-    if (query.reminder === "false") {
-        conditions.push("d.wants_reminder = 0");
-    }
-
-    if (query.from || query.to) {
-        let donationDateCondition = `
-            EXISTS (
-                SELECT 1
-                FROM donations dn
-                WHERE dn.donor_id = d.donor_id
-        `;
-
-        if (query.from) {
-            donationDateCondition += `
-                AND date(dn.donation_date) >= date(?)
-            `;
-
-            params.push(query.from);
-        }
-
-        if (query.to) {
-            donationDateCondition += `
-                AND date(dn.donation_date) <= date(?)
-            `;
-
-            params.push(query.to);
-        }
-
-        donationDateCondition += ")";
-
-        conditions.push(donationDateCondition);
-    }
-
-    const whereClause = conditions.length
-        ? `WHERE ${conditions.join(" AND ")}`
-        : "";
-
-    const countResult = db.prepare(`
-        SELECT COUNT(*) AS total
-        FROM donors d
-        ${whereClause}
-    `).get(...params) as {
-        total: number;
-    };
-
-    const rows = db.prepare(`
-        SELECT
-            d.donor_id,
-            d.first_name,
-            d.last_name,
-            d.blood_type,
-            d.phone,
-            d.wants_reminder,
-
-            (
-                SELECT MAX(dn.donation_date)
-                FROM donations dn
-                WHERE dn.donor_id = d.donor_id
-            ) AS last_donation,
-
-            (
-                SELECT COUNT(*)
-                FROM donations dn
-                WHERE dn.donor_id = d.donor_id
-            ) AS total_donations
-
-        FROM donors d
-
-        ${whereClause}
-
-        ORDER BY
-            last_donation DESC,
-            d.donor_id DESC
-
-        LIMIT ? OFFSET ?
-    `).all(
-        ...params,
-        limit,
-        offset
-    ) as any[];
-
-    const donors = rows.map((donor) => ({
-        donor_id: donor.donor_id,
-        donor_code: formatDonorId(donor.donor_id),
-
-        first_name: donor.first_name,
-        last_name: donor.last_name,
-        full_name: `${donor.first_name} ${donor.last_name}`,
-
-        blood_type: donor.blood_type,
-        phone: donor.phone,
-        wants_reminder: Boolean(donor.wants_reminder),
-
-        last_donation: donor.last_donation,
-        total_donations: donor.total_donations,
-
-        days_since_last_donation: getDaysSince(
-            donor.last_donation
-        ),
-
-        next_eligible: getNextEligibleDate(
-            donor.last_donation
-        )
-    }));
-
-    return {
-        donors,
-        pagination: {
-            page,
-            limit,
-            total: countResult.total,
-            totalPages: Math.ceil(
-                countResult.total / limit
-            )
-        }
-    };
+function createError(message: string, statusCode: number) {
+  const error = new Error(message) as any;
+  error.statusCode = statusCode;
+  return error;
 }
 
-function getDonorById(id: number) {
-    const donor = db.prepare(`
-        SELECT *
-        FROM donors
-        WHERE donor_id = ?
-    `).get(id) as any;
+function formatDonor(donor: any) {
+  if (!donor) return null;
 
-    if (!donor) {
-        throw new ApiError(404, "Donor not found");
-    }
+  return {
+    ...donor,
+    donorNumber: formatDonorId(donor.donor_id),
+    wants_reminder: Boolean(donor.wants_reminder)
+  };
+}
 
-    const donations = db.prepare(`
-        SELECT
-            donation_id,
-            donation_date
+function getDonorRow(donorNumber: number) {
+  return db.prepare(`
+    SELECT *
+    FROM donors
+    WHERE donor_id = ?
+  `).get(donorNumber) as any;
+}
+
+export function getAllDonors(options: {
+  search: string;
+  bloodType?: string;
+  page: number;
+  limit: number;
+}) {
+  const search = options.search.trim();
+  const bloodType = options.bloodType;
+
+  const page = Math.max(1, options.page || 1);
+  const limit = Math.min(100, Math.max(1, options.limit || 10));
+  const offset = (page - 1) * limit;
+
+  const conditions: string[] = [];
+  const params: any[] = [];
+
+  if (search) {
+    conditions.push(`
+      (
+        first_name LIKE ?
+        OR last_name LIKE ?
+        OR phone LIKE ?
+      )
+    `);
+
+    const searchValue = `%${search}%`;
+
+    params.push(searchValue, searchValue, searchValue);
+  }
+
+  if (bloodType) {
+    conditions.push("blood_type = ?");
+    params.push(bloodType);
+  }
+
+  const whereClause = conditions.length
+    ? `WHERE ${conditions.join(" AND ")}`
+    : "";
+
+  const totalResult = db.prepare(`
+    SELECT COUNT(*) AS total
+    FROM donors
+    ${whereClause}
+  `).get(...params) as { total: number };
+
+  const donors = db.prepare(`
+    SELECT
+      d.*,
+      (
+        SELECT MAX(donation_date)
         FROM donations
-        WHERE donor_id = ?
-        ORDER BY donation_date DESC
-    `).all(id) as any[];
+        WHERE donor_id = d.donor_id
+      ) AS last_donation,
+      (
+        SELECT COUNT(*)
+        FROM donations
+        WHERE donor_id = d.donor_id
+      ) AS total_donations,
+      (
+        SELECT date(MAX(donation_date), '+56 days')
+        FROM donations
+        WHERE donor_id = d.donor_id
+      ) AS next_eligible_date
+    FROM donors d
+    ${whereClause}
+    ORDER BY d.donor_id DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset) as any[];
 
-    const lastDonation = donations.length > 0
-        ? donations[0].donation_date
-        : null;
-
-    return {
-        donor_id: donor.donor_id,
-        donor_code: formatDonorId(donor.donor_id),
-
-        first_name: donor.first_name,
-        last_name: donor.last_name,
-        full_name: `${donor.first_name} ${donor.last_name}`,
-
-        date_of_birth: donor.date_of_birth,
-        sex: donor.sex,
-        address: donor.address,
-        phone: donor.phone,
-
-        blood_type: donor.blood_type,
-        wants_reminder: Boolean(donor.wants_reminder),
-
-        created_at: donor.created_at,
-
-        total_donations: donations.length,
-        last_donation: lastDonation,
-
-        days_since_last_donation: getDaysSince(
-            lastDonation
-        ),
-
-        next_eligible: getNextEligibleDate(
-            lastDonation
-        ),
-
-        donation_history: donations.map((donation) => ({
-            donation_id: donation.donation_id,
-            donation_code: formatDonationId(
-                donation.donation_id
-            ),
-            donation_date: donation.donation_date
-        }))
-    };
+  return {
+    data: donors.map(formatDonor),
+    pagination: {
+      page,
+      limit,
+      total: totalResult.total,
+      totalPages: Math.ceil(totalResult.total / limit)
+    }
+  };
 }
 
-function createDonor(data: DonorInput) {
-    const result = db.prepare(`
-        INSERT INTO donors (
-            first_name,
-            last_name,
-            date_of_birth,
-            sex,
-            address,
-            phone,
-            wants_reminder,
-            blood_type
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-        data.first_name.trim(),
-        data.last_name.trim(),
-        data.date_of_birth,
-        data.sex,
-        data.address.trim(),
-        data.phone.trim(),
-        data.wants_reminder ? 1 : 0,
-        data.blood_type || null
-    );
+export function getDonorByNumber(donorNumber: number) {
+  const donor = db.prepare(`
+    SELECT
+      d.*,
+      (
+        SELECT MAX(donation_date)
+        FROM donations
+        WHERE donor_id = d.donor_id
+      ) AS last_donation,
+      (
+        SELECT COUNT(*)
+        FROM donations
+        WHERE donor_id = d.donor_id
+      ) AS total_donations,
+      (
+        SELECT date(MAX(donation_date), '+56 days')
+        FROM donations
+        WHERE donor_id = d.donor_id
+      ) AS next_eligible_date
+    FROM donors d
+    WHERE d.donor_id = ?
+  `).get(donorNumber) as any;
 
-    return getDonorById(
-        Number(result.lastInsertRowid)
-    );
+  if (!donor) {
+    throw createError("Donor not found", 404);
+  }
+
+  return formatDonor(donor);
 }
 
-function updateDonor(
-    id: number,
-    data: Partial<DonorInput>
-) {
-    const existing = db.prepare(`
-        SELECT donor_id
-        FROM donors
-        WHERE donor_id = ?
-    `).get(id);
+export function createDonor(data: any) {
+  const result = db.prepare(`
+    INSERT INTO donors (
+      first_name,
+      last_name,
+      date_of_birth,
+      sex,
+      address,
+      phone,
+      wants_reminder,
+      blood_type
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    data.first_name,
+    data.last_name,
+    data.date_of_birth,
+    data.sex,
+    data.address,
+    data.phone,
+    data.wants_reminder ? 1 : 0,
+    data.blood_type || null
+  );
 
-    if (!existing) {
-        throw new ApiError(404, "Donor not found");
-    }
+  const donorNumber = Number(result.lastInsertRowid);
 
-    const fields: string[] = [];
-    const values: any[] = [];
-
-    const allowedFields = [
-        "first_name",
-        "last_name",
-        "date_of_birth",
-        "sex",
-        "address",
-        "phone",
-        "blood_type"
-    ] as const;
-
-    for (const field of allowedFields) {
-        if (data[field] !== undefined) {
-            fields.push(`${field} = ?`);
-
-            const value = data[field];
-
-            values.push(
-                typeof value === "string"
-                    ? value.trim()
-                    : value
-            );
-        }
-    }
-
-    if (data.wants_reminder !== undefined) {
-        fields.push("wants_reminder = ?");
-        values.push(data.wants_reminder ? 1 : 0);
-    }
-
-    if (fields.length > 0) {
-        values.push(id);
-
-        db.prepare(`
-            UPDATE donors
-            SET ${fields.join(", ")}
-            WHERE donor_id = ?
-        `).run(...values);
-    }
-
-    return getDonorById(id);
+  return getDonorByNumber(donorNumber);
 }
 
-export default {
-    getAllDonors,
-    getDonorById,
-    createDonor,
-    updateDonor
-};
+export function updateDonor(donorNumber: number, data: any) {
+  const existingDonor = getDonorRow(donorNumber);
+
+  if (!existingDonor) {
+    throw createError("Donor not found", 404);
+  }
+
+  db.prepare(`
+    UPDATE donors
+    SET
+      first_name = ?,
+      last_name = ?,
+      date_of_birth = ?,
+      sex = ?,
+      address = ?,
+      phone = ?,
+      wants_reminder = ?,
+      blood_type = ?
+    WHERE donor_id = ?
+  `).run(
+    data.first_name,
+    data.last_name,
+    data.date_of_birth,
+    data.sex,
+    data.address,
+    data.phone,
+    data.wants_reminder ? 1 : 0,
+    data.blood_type || null,
+    donorNumber
+  );
+
+  return getDonorByNumber(donorNumber);
+}
+
+export function getDonorDonations(donorNumber: number) {
+  const donor = getDonorRow(donorNumber);
+
+  if (!donor) {
+    throw createError("Donor not found", 404);
+  }
+
+  const donations = db.prepare(`
+    SELECT
+      donation_id,
+      donor_id,
+      donation_date
+    FROM donations
+    WHERE donor_id = ?
+    ORDER BY donation_date DESC
+  `).all(donorNumber) as any[];
+
+  return donations.map((donation) => ({
+    ...donation,
+    donationNumber: formatDonationId(donation.donation_id)
+  }));
+}
