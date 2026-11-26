@@ -1,21 +1,16 @@
-import {
-    Request,
-    Response,
-    NextFunction
-} from "express";
+
+import ApiError from '../utils/ApiError.js';
+
+// DONOR VALIDATION
 
 const bloodTypes = [
     "A+", "A-", "B+", "B-",
     "AB+", "AB-", "O+", "O-"
 ];
 
-function validateCreateDonor(
-    req: Request,
-    res: Response,
-    next: NextFunction
-) {
+export function validateCreateDonor(req, res, next) {
     const data = req.body;
-    const errors: string[] = [];
+    const errors = [];
 
     if (
         typeof data.first_name !== "string" ||
@@ -79,24 +74,17 @@ function validateCreateDonor(
     }
 
     if (errors.length > 0) {
-        res.status(400).json({
-            success: false,
-            errors
-        });
-
-        return;
+        return next(
+            new ApiError(400, "Validation failed", errors)
+        );
     }
 
     next();
 }
 
-function validateUpdateDonor(
-    req: Request,
-    res: Response,
-    next: NextFunction
-) {
+export function validateUpdateDonor(req, res, next) {
     const data = req.body;
-    const errors: string[] = [];
+    const errors = [];
 
     const allowedFields = [
         "first_name",
@@ -199,18 +187,41 @@ function validateUpdateDonor(
     }
 
     if (errors.length > 0) {
-        res.status(400).json({
-            success: false,
-            errors
-        });
-
-        return;
+        return next(
+            new ApiError(400, "Validation failed", errors)
+        );
     }
 
     next();
 }
 
-export {
-    validateCreateDonor,
-    validateUpdateDonor
+// GENERIC ZOD VALIDATION
+
+export default (schemas) => (req, res, next) => {
+    req.validated = {};
+
+    for (const key of ["params", "query", "body"]) {
+        if (!schemas[key]) continue;
+
+        const result = schemas[key].safeParse(req[key]);
+
+        if (!result.success) {
+            const details = result.error.issues.map((issue) => ({
+                field: issue.path.join("."),
+                message: issue.message,
+            }));
+
+            return next(
+                new ApiError(
+                    400,
+                    "Validation failed",
+                    details
+                )
+            );
+        }
+
+        req.validated[key] = result.data;
+    }
+
+    next();
 };

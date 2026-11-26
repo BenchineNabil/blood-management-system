@@ -1,29 +1,19 @@
-import Database from "better-sqlite3";
-import path from "path";
-import fs from "fs";
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
+import { env } from './env.js';
 
-const databasePath = process.env.DB_PATH
-    ? path.resolve(process.env.DB_PATH)
-    : path.resolve(process.cwd(), "../database/hemocare.db");
+const here = path.dirname(fileURLToPath(import.meta.url));
+const backendRoot = path.resolve(here, '../..');
+const dbFile = path.resolve(backendRoot, env.dbPath);
+const schemaFile = path.resolve(backendRoot, '../database/schema.sql');
 
-const schemaPath = path.resolve(
-    process.cwd(),
-    "../database/schema.sql"
-);
+const db = new Database(dbFile);
+db.pragma('foreign_keys = ON');
+db.pragma('journal_mode = WAL');
 
-const databaseDirectory = path.dirname(databasePath);
 
-if (!fs.existsSync(databaseDirectory)) {
-    fs.mkdirSync(databaseDirectory, { recursive: true });
-}
-
-const db = new Database(databasePath);
-
-db.pragma("foreign_keys = ON");
-
-if (fs.existsSync(schemaPath)) {
-    const schema = fs.readFileSync(schemaPath, "utf-8");
-    db.exec(schema);
-}
+db.exec(fs.readFileSync(schemaFile, 'utf8'));
 
 export default db;
